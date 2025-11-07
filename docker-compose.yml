@@ -1,6 +1,4 @@
-﻿version: "3.9"
-
-services:
+﻿services:
   api:
     build: .
     container_name: job-agent-api
