@@ -1,0 +1,19 @@
+default:
+  allowed: true
+  delay_seconds: [3, 10]
+  max_concurrency: 2
+  max_consecutive_errors: 5
+  backoff: { base: 1, factor: 2, max: 64 }
+  stop_on: ["403", "captcha"]
+  user_agent: "JobAgent/1.0 (+https://example.com; contact: you@example.com)"
+
+sites:
+  seek.com.au:
+    allowed: false
+  apsjobs.gov.au:
+    allowed: true
+    delay_seconds: [4, 12]
+  iworkfor.nsw.gov.au:
+    allowed: true
+  careers.vic.gov.au:
+    allowed: true

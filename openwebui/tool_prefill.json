@@ -1,0 +1,8 @@
+﻿{
+  "name": "prefill_application",
+  "description": "Open a headed browser and prefill application form, then pause for manual submission.",
+  "type": "http",
+  "method": "POST",
+  "url": "http://agent-api:8000/prefill",
+  "json": { "apply_url": "", "name": "", "email": "", "phone": "", "resume_path": "", "cover_letter": "" }
+}

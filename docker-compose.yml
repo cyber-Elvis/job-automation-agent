@@ -1,12 +1,33 @@
-﻿services:
-  api:
+﻿version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: jobagent
+      POSTGRES_USER: jobagent
+      POSTGRES_DB: jobagent
+    ports: ["5432:5432"]
+    volumes: [pg:/var/lib/postgresql/data]
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+
+  agent-api:
     build: .
-    container_name: job-agent-api
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
+    env_file: [.env]
+    ports: ["8000:8000"]
+    depends_on: [db, redis]
     volumes:
-      - ./app:/app/app
-    restart: unless-stopped
+      - ./:/workspace:cached
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports: ["3000:8080"]
+    depends_on: [agent-api]
+    environment:
+      ENABLE_SIGNUP: "false"
+
+volumes:
+  pg: {}

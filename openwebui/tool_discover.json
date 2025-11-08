@@ -1,0 +1,8 @@
+﻿{
+  "name": "discover_jobs",
+  "description": "Discover jobs from public sources (Greenhouse/Lever/RSS/page with JSON-LD).",
+  "type": "http",
+  "method": "GET",
+  "url": "http://agent-api:8000/discover",
+  "query_params": ["greenhouse_company","lever_company","rss_url","page_url","company","limit"]
+}
