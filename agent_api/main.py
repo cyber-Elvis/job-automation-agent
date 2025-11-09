@@ -1,30 +1,156 @@
-﻿from fastapi import FastAPI, Query, HTTPException
+﻿from fastapi import FastAPI, Depends, HTTPException
+import importlib
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel
 from typing import Optional, List
-from .models import Job, PrefillPayload
-from .policy_guard import PolicyGuard
-from .collectors import greenhouse, lever, rss_generic
-from .extract.structured import extract_jobposting
-from urllib.parse import urlparse
-import os
-app = FastAPI(title=os.getenv("APP_NAME","JobAgent"))
-PG = PolicyGuard(user_agent=os.getenv("USER_AGENT", "JobAgent/1.0 (+https://example.com)"))
+from datetime import datetime
+from .db import Base, engine, SessionLocal
+from .models import Job as JobModel
+
+# Minimal API shell that includes available collectors as routers.
+app = FastAPI(title="Job Automation Agent API", version="0.3.0")
+
+
+@app.on_event("startup")
+def _on_startup():
+    # create tables on startup (development convenience). Use migrations for prod.
+    Base.metadata.create_all(bind=engine)
+
+
+def _include_optional(name: str):
+    try:
+        mod = importlib.import_module(f".collectors.{name}", package=__package__)
+        app.include_router(mod.router)
+        print(f"[collectors] included: {name}")
+    except Exception as e:
+        # Don't fail the app if a collector module is missing or misconfigured
+        print(f"[collectors] skipping {name}: {e}")
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+for _name in ("rss_generic", "greenhouse", "lever"):
+    _include_optional(_name)
+
+
 @app.get("/health")
-def health(): return {"ok": True}
-@app.get("/discover", response_model=List[Job])
-def discover(company: Optional[str] = Query(default=None), lever_company: Optional[str] = None, greenhouse_company: Optional[str] = None, rss_url: Optional[str] = None, page_url: Optional[str] = None, limit: int = 50):
-    ua = os.getenv("USER_AGENT", "JobAgent/1.0 (+https://example.com)")
-    out: list[Job] = []
-    if greenhouse_company: out += greenhouse.fetch(greenhouse_company, ua)
-    if lever_company: out += lever.fetch(lever_company, ua)
-    if rss_url: out += rss_generic.fetch(rss_url, company, ua)
-    if page_url:
-        domain = urlparse(page_url).netloc
-        if not PG.allowed(domain): raise HTTPException(403, "Domain disallowed by policy.")
-        if not PG.can_fetch("https://{0}".format(domain), "/"): raise HTTPException(403, "robots.txt forbids fetching this path.")
-        PG.polite_wait(domain); out += extract_jobposting(page_url, ua)
-    return out[:limit]
-@app.post("/prefill")
-def prefill(p: PrefillPayload):
-    from .prefill.playwright_prefill import prefill_and_pause
-    prefill_and_pause(apply_url=str(p.apply_url), ua=os.getenv("USER_AGENT", "JobAgent/1.0 (+https://example.com)"), fields={"name": p.name, "email": p.email, "phone": p.phone, "resume_path": p.resume_path, "cover_letter": p.cover_letter})
-    return {"launched": True, "note": "A headed browser opened for manual review & submit."}
+def health():
+    return {"ok": True}
+
+
+class JobCreate(BaseModel):
+    title: str
+    link: Optional[str] = None
+    summary: Optional[str] = None
+    published: Optional[datetime] = None
+    company: Optional[str] = None
+    location: Optional[str] = None
+    source: Optional[str] = "rss"
+
+
+class JobOut(BaseModel):
+    id: int
+    title: str
+    link: Optional[str] = None
+    summary: Optional[str] = None
+    published: Optional[datetime] = None
+    company: Optional[str] = None
+    location: Optional[str] = None
+    source: Optional[str]
+
+
+class JobUpdate(BaseModel):
+    title: Optional[str] = None
+    link: Optional[str] = None
+    summary: Optional[str] = None
+    published: Optional[datetime] = None
+    company: Optional[str] = None
+    location: Optional[str] = None
+    source: Optional[str] = None
+
+
+def _job_to_dict(j: JobModel) -> dict:
+    return {
+        "id": j.id,
+        "title": j.title,
+        "link": j.link,
+        "summary": j.summary,
+        "published": j.published.isoformat() if j.published else None,
+        "company": j.company,
+        "location": j.location,
+        "source": j.source,
+    }
+
+
+@app.get("/jobs", response_model=List[JobOut])
+def list_jobs(limit: int = 100, db: Session = Depends(get_db)):
+    stmt = select(JobModel).limit(limit)
+    rows = db.execute(stmt).scalars().all()
+    return [_job_to_dict(r) for r in rows]
+
+
+@app.get("/jobs/{job_id}", response_model=JobOut)
+def get_job(job_id: int, db: Session = Depends(get_db)):
+    j = db.get(JobModel, job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _job_to_dict(j)
+
+
+@app.post("/jobs", status_code=201, response_model=JobOut)
+def create_job(payload: JobCreate, db: Session = Depends(get_db)):
+    job = JobModel(**payload.dict())
+    db.add(job)
+    try:
+        db.commit()
+        db.refresh(job)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Job with this link already exists")
+    return _job_to_dict(job)
+
+
+@app.put("/jobs/{job_id}", response_model=JobOut)
+def update_job(job_id: int, payload: JobUpdate, db: Session = Depends(get_db)):
+    j = db.get(JobModel, job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    data = payload.dict(exclude_unset=True)
+    if not data:
+        return _job_to_dict(j)
+    for field, val in data.items():
+        setattr(j, field, val)
+    try:
+        db.add(j)
+        db.commit()
+        db.refresh(j)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Job with this link already exists")
+    return _job_to_dict(j)
+
+
+@app.delete("/jobs/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db)):
+    j = db.get(JobModel, job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    db.delete(j)
+    db.commit()
+    return {"deleted": True}
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

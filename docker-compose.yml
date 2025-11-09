@@ -1,31 +1,53 @@
-﻿version: "3.9"
-services:
+﻿services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_PASSWORD: jobagent
       POSTGRES_USER: jobagent
+      # Allow overriding via env var, otherwise default to 'jobagent'
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-jobagent}"
       POSTGRES_DB: jobagent
-    ports: ["5432:5432"]
-    volumes: [pg:/var/lib/postgresql/data]
+    # optional healthcheck to make API wait
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobagent -d jobagent -h localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg:/var/lib/postgresql/data
 
   redis:
     image: redis:7
-    ports: ["6379:6379"]
+    # no host port mapping – container is reachable as "redis:6379" from agent-api
 
   agent-api:
-    build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    env_file: [.env]
-    ports: ["8000:8000"]
-    depends_on: [db, redis]
+    build:
+      context: .
+      dockerfile: ./agent_api/Dockerfile
+    command: uvicorn agent_api.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    environment:
+      # Compose will substitute POSTGRES_PASSWORD if present, else default to 'jobagent'
+      DATABASE_URL: "postgresql+psycopg2://jobagent:${POSTGRES_PASSWORD:-jobagent}@db:5432/jobagent"
     volumes:
-      - ./:/workspace:cached
+      - ./:/workspace
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    shm_size: "1gb"  # chromium stability for Playwright
 
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
-    ports: ["3000:8080"]
-    depends_on: [agent-api]
+    ports:
+      - "3000:8080"
+    depends_on:
+      - agent-api
     environment:
       ENABLE_SIGNUP: "false"
 

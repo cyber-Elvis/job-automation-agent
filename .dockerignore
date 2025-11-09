@@ -8,3 +8,15 @@ venv/
 .vscode/
 .devcontainer/
 .env
+*.egg-info
+dist/
+build/
+.DS_Store
+node_modules/
+.env.local
+Dockerfile
+agent_api/Dockerfile
+.github/workflows/
+scripts/
+.pytest_cache/
+.mypy_cache/
