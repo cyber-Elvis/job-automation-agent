@@ -10,9 +10,10 @@ import httpx       # HTTP client with timeouts & retries
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from ..models import Job
+from ..models import JobORM
 from ..deps import get_db
 from pydantic import BaseModel, HttpUrl, Field
+from ..schemas import JobItem
 
 router = APIRouter(prefix="/collectors/rss", tags=["collectors: rss"])
 
@@ -26,16 +27,6 @@ class RSSCollectRequest(BaseModel):
     timeout_seconds: float = Field(10.0, ge=2.0, le=60.0, description="Network timeout")
     # Optional: try to pull company/location from title with a regex like 'Title - Company (Location)'
     guess_meta_from_title: bool = Field(True, description="Try to infer company/location from entry title")
-
-
-class JobItem(BaseModel):
-    title: str
-    link: Optional[HttpUrl] = None
-    summary: Optional[str] = None
-    published: Optional[datetime] = None
-    company: Optional[str] = None
-    location: Optional[str] = None
-    source: str = "rss"
 
 
 class RSSCollectResponse(BaseModel):
@@ -141,39 +132,39 @@ def collect(req: RSSCollectRequest):
                 location=(location or None),
             )
         )
+    # after loop: return collected items
+    return RSSCollectResponse(url=req.url, count=len(items), items=items)
 
-        return RSSCollectResponse(url=req.url, count=len(items), items=items)
 
+@router.post("/collect-and-store", response_model=RSSCollectResponse)
+def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
+    """Collect items from the feed and insert them into the jobs table.
 
-    @router.post("/collect-and-store", response_model=RSSCollectResponse)
-    def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
-        """Collect items from the feed and insert them into the jobs table.
+    This reuses the `collect()` parser above and attempts to insert each parsed
+    item into the database. Duplicate links are silently skipped (UniqueConstraint).
+    """
+    resp = collect(req)
+    inserted = 0
 
-        This reuses the `collect()` parser above and attempts to insert each parsed
-        item into the database. Duplicate links are silently skipped (UniqueConstraint).
-        """
-        resp = collect(req)
-        inserted = 0
+    for item in resp.items:
+        row = JobORM(
+            title=item.title,
+            link=str(item.link) if item.link else None,
+            summary=item.summary,
+            published=item.published,
+            company=item.company,
+            location=item.location,
+            source=item.source,
+        )
+        try:
+            db.add(row)
+            db.commit()
+            inserted += 1
+        except IntegrityError:
+            db.rollback()  # duplicate link (UniqueConstraint)
+        except Exception:
+            db.rollback()
+            raise
 
-        for item in resp.items:
-            row = Job(
-                title=item.title,
-                link=str(item.link) if item.link else None,
-                summary=item.summary,
-                published=item.published,
-                company=item.company,
-                location=item.location,
-                source=item.source,
-            )
-            try:
-                db.add(row)
-                db.commit()
-                inserted += 1
-            except IntegrityError:
-                db.rollback()  # duplicate link (UniqueConstraint)
-            except Exception:
-                db.rollback()
-                raise
-
-        # Return what we parsed (count is the parsed count, not inserted count)
-        return resp
+    # Return what we parsed (count is the parsed count, not inserted count)
+    return resp

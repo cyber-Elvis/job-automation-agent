@@ -1,8 +1,9 @@
 ﻿import extruct, requests
 from w3lib.html import get_base_url
-from ..models import Job
+from ..schemas import JobItem
 
-def extract_jobposting(url: str, ua: str) -> list[Job]:
+
+def extract_jobposting(url: str, ua: str) -> list[JobItem]:
     """
     Extract JSON-LD JobPosting data from a page (policy-safe: single page fetch).
     Returns a list[Job] (usually 1).
@@ -17,12 +18,11 @@ def extract_jobposting(url: str, ua: str) -> list[Job]:
             title = item.get("title")
             company = (item.get("hiringOrganization") or {}).get("name")
             location = (item.get("jobLocation") or {}).get("address", {}).get("addressLocality")
-            jobs.append(Job(
+            jobs.append(JobItem(
                 source="generic",
                 company=company,
                 title=title,
                 location=location,
-                url=url,
-                raw=item
+                link=url,
             ))
     return jobs

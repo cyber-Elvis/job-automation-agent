@@ -3,11 +3,11 @@ import importlib
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 from .db import Base, engine, SessionLocal
-from .models import Job as JobModel
+from .models import JobORM as JobModel
+from .schemas import JobCreate, JobOut, JobUpdate
 
 # Minimal API shell that includes available collectors as routers.
 app = FastAPI(title="Job Automation Agent API", version="0.3.0")
@@ -44,37 +44,6 @@ for _name in ("rss_generic", "greenhouse", "lever"):
 @app.get("/health")
 def health():
     return {"ok": True}
-
-
-class JobCreate(BaseModel):
-    title: str
-    link: Optional[str] = None
-    summary: Optional[str] = None
-    published: Optional[datetime] = None
-    company: Optional[str] = None
-    location: Optional[str] = None
-    source: Optional[str] = "rss"
-
-
-class JobOut(BaseModel):
-    id: int
-    title: str
-    link: Optional[str] = None
-    summary: Optional[str] = None
-    published: Optional[datetime] = None
-    company: Optional[str] = None
-    location: Optional[str] = None
-    source: Optional[str]
-
-
-class JobUpdate(BaseModel):
-    title: Optional[str] = None
-    link: Optional[str] = None
-    summary: Optional[str] = None
-    published: Optional[datetime] = None
-    company: Optional[str] = None
-    location: Optional[str] = None
-    source: Optional[str] = None
 
 
 def _job_to_dict(j: JobModel) -> dict:
@@ -147,10 +116,3 @@ def delete_job(job_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"deleted": True}
 
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
