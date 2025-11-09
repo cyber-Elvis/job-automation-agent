@@ -7,15 +7,18 @@ import re
 
 import feedparser  # RSS/Atom parser
 import httpx       # HTTP client with timeouts & retries
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.exc import IntegrityError
+from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert
 from ..models import JobORM
 from ..deps import get_db
-from pydantic import BaseModel, HttpUrl, Field
-from ..schemas import JobItem
+from ..db import SessionLocal
+from pydantic import BaseModel, HttpUrl, Field, AnyUrl
+from ..schemas import JobItem, CollectStoreSummary, RSSCollectResponse
+from ..logging_config import get_logger
 
 router = APIRouter(prefix="/collectors/rss", tags=["collectors: rss"])
+logger = get_logger(__name__)
 
 
 # -----------------------
@@ -136,35 +139,133 @@ def collect(req: RSSCollectRequest):
     return RSSCollectResponse(url=req.url, count=len(items), items=items)
 
 
-@router.post("/collect-and-store", response_model=RSSCollectResponse)
+@router.post("/collect-and-store", response_model=CollectStoreSummary)
 def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
     """Collect items from the feed and insert them into the jobs table.
 
-    This reuses the `collect()` parser above and attempts to insert each parsed
-    item into the database. Duplicate links are silently skipped (UniqueConstraint).
+    This reuses the `collect()` parser above and performs a fast bulk insert
+    using `bulk_insert_ignore_duplicates`. Returns a small summary dict so the
+    endpoint won't 500 on duplicate inserts and doesn't commit per-row.
     """
+    # parse items (reuses same parsing logic)
     resp = collect(req)
-    inserted = 0
 
-    for item in resp.items:
-        row = JobORM(
-            title=item.title,
-            link=str(item.link) if item.link else None,
-            summary=item.summary,
-            published=item.published,
-            company=item.company,
-            location=item.location,
-            source=item.source,
-        )
-        try:
-            db.add(row)
-            db.commit()
-            inserted += 1
-        except IntegrityError:
-            db.rollback()  # duplicate link (UniqueConstraint)
-        except Exception:
-            db.rollback()
-            raise
+    # perform fast bulk insert (single roundtrip)
+    inserted = bulk_insert_ignore_duplicates(db, resp.items)
 
-    # Return what we parsed (count is the parsed count, not inserted count)
+    return CollectStoreSummary(url=str(req.url), stored=inserted, count=len(resp.items))
+
+
+def _do_collect_and_store(req: RSSCollectRequest, db: Session) -> RSSCollectResponse:
+    """Internal helper to collect and store using an explicit DB session."""
+    resp = collect(req)
+    # Fast bulk insert using Postgres ON CONFLICT DO NOTHING
+    # Build a list of dict rows sized/truncated to match DB columns and then
+    # perform a single INSERT ... VALUES (...), (...), ... ON CONFLICT DO NOTHING
+    inserted = bulk_insert_ignore_duplicates(db, resp.items)
+    try:
+        total = len(resp.items)
+    except Exception:
+        total = 0
+    logger.info("rss bulk-insert stored=%d total=%d", inserted, total)
     return resp
+
+
+def _rows_from_items(items):
+    rows = []
+    for it in items:
+        rows.append({
+            "title": (it.title or "(untitled)")[:512],
+            "link": str(it.link) if it.link else None,
+            "summary": it.summary,
+            "published": it.published,
+            "company": (it.company or None)[:256] if it.company else None,
+            "location": (it.location or None)[:256] if it.location else None,
+            "source": it.source or "rss",
+        })
+    return rows
+
+
+def bulk_insert_ignore_duplicates(db: Session, items) -> int:
+    payload = _rows_from_items(items)
+    if not payload:
+        return 0
+
+    stmt = insert(JobORM).values(payload)
+    # relies on UNIQUE (source, link)
+    stmt = stmt.on_conflict_do_nothing(index_elements=["source", "link"])
+
+    result = db.execute(stmt)   # fast, single roundtrip
+    db.commit()
+    # NOTE: Postgres returns number of rows attempted; rowcount can be -1 on some drivers.
+    try:
+        return int(result.rowcount) if result.rowcount is not None else 0
+    except Exception:
+        return 0
+
+
+@router.post("/collect-from", response_model=RSSCollectResponse)
+def collect_from(url: AnyUrl, limit: int = 20, background_tasks: BackgroundTasks = None):
+    """Background-friendly endpoint to collect from a URL and store results.
+
+    This enqueues the full collection+store operation to run in the background.
+    The request returns immediately with a queued status.
+    """
+    req = RSSCollectRequest(url=url, limit=limit)
+
+    def _bg_task(r: RSSCollectRequest):
+        db = SessionLocal()
+        try:
+            _do_collect_and_store(r, db)
+        finally:
+            db.close()
+
+    # schedule background work and return immediately
+    if background_tasks is not None:
+        background_tasks.add_task(_bg_task, req)
+    return {"queued": True, "url": str(url), "limit": limit}
+    # fallback: run synchronously if BackgroundTasks not provided
+    db = SessionLocal()
+    try:
+        return _do_collect_and_store(req, db)
+    finally:
+        db.close()
+
+
+# -----------------------
+# Simple jobs query API (mounted under the same router)
+# -----------------------
+jobs_router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@jobs_router.get("", response_model=list[dict])
+def list_jobs(
+    q: Optional[str] = Query(None, description="search in title"),
+    source: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    query = db.query(JobORM).order_by(JobORM.id.desc())
+    if source:
+        query = query.filter(JobORM.source == source)
+    if q:
+        query = query.filter(JobORM.title.ilike(f"%{q}%"))
+    rows = query.limit(limit).offset(offset).all()
+    # quick dict view; or make a Pydantic JobOut schema
+    return [
+        {
+            "id": r.id,
+            "title": r.title,
+            "link": r.link,
+            "published": r.published,
+            "company": r.company,
+            "location": r.location,
+            "source": r.source,
+        }
+        for r in rows
+    ]
+
+
+# include under the main collector router so main.py's include_router(mod.router) picks it up
+router.include_router(jobs_router)

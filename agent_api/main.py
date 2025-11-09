@@ -7,7 +7,7 @@ from typing import Optional, List
 from datetime import datetime
 from .db import Base, engine, SessionLocal
 from .models import JobORM as JobModel
-from .schemas import JobCreate, JobOut, JobUpdate
+# Job API routes are provided by `agent_api.routers.jobs`
 
 # Minimal API shell that includes available collectors as routers.
 app = FastAPI(title="Job Automation Agent API", version="0.3.0")
@@ -17,6 +17,12 @@ app = FastAPI(title="Job Automation Agent API", version="0.3.0")
 def _on_startup():
     # create tables on startup (development convenience). Use migrations for prod.
     Base.metadata.create_all(bind=engine)
+    # start APScheduler (if configured)
+    try:
+        _schedule_jobs()
+    except Exception as e:
+        # do not crash app if scheduling fails
+        print(f"[scheduler] failed to start: {e}")
 
 
 def _include_optional(name: str):
@@ -41,78 +47,62 @@ for _name in ("rss_generic", "greenhouse", "lever"):
     _include_optional(_name)
 
 
+# Explicitly include the RSS collector router and its jobs sub-router so they're
+# mounted even if dynamic imports change; this makes the jobs API available at
+# /collectors/rss/jobs and also ensures the collector router is mounted.
+from .collectors import rss_generic
+from .collectors.rss_generic import jobs_router as collectors_jobs_router
+app.include_router(rss_generic.router)
+app.include_router(collectors_jobs_router)
+
+# Include the consolidated jobs router (provides /jobs and /jobs/stats)
+from .routers import jobs as jobs_router
+app.include_router(jobs_router.router)
+
+# --- APScheduler setup ---
+import os
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
+
+_scheduler: BackgroundScheduler | None = None
+
+def _schedule_jobs():
+    global _scheduler
+    if _scheduler is not None:
+        return _scheduler
+    _scheduler = BackgroundScheduler()
+
+    # Example: schedule a periodic RSS collection if env var is set
+    feed_url = os.getenv("RSS_COLLECT_URL")
+    if feed_url:
+        interval_seconds = int(os.getenv("RSS_COLLECT_INTERVAL_SECONDS", "900"))  # 15 min default
+        def _job():
+            # Use SessionLocal inside job; avoid reusing request-scoped sessions
+            from .collectors.rss_generic import RSSCollectRequest, _do_collect_and_store
+            from .db import SessionLocal as _SessionLocal
+            db = _SessionLocal()
+            try:
+                req = RSSCollectRequest(url=feed_url, limit=50)
+                _do_collect_and_store(req, db)
+            except Exception as e:
+                logger.exception("scheduled rss collection failed: %s", e)
+            finally:
+                db.close()
+        _scheduler.add_job(_job, IntervalTrigger(seconds=interval_seconds), id="rss_collect")
+        logger.info("Scheduled RSS collector for url=%s interval=%ss", feed_url, interval_seconds)
+
+    _scheduler.start()
+    return _scheduler
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
 
 
-def _job_to_dict(j: JobModel) -> dict:
-    return {
-        "id": j.id,
-        "title": j.title,
-        "link": j.link,
-        "summary": j.summary,
-        "published": j.published.isoformat() if j.published else None,
-        "company": j.company,
-        "location": j.location,
-        "source": j.source,
-    }
-
-
-@app.get("/jobs", response_model=List[JobOut])
-def list_jobs(limit: int = 100, db: Session = Depends(get_db)):
-    stmt = select(JobModel).limit(limit)
-    rows = db.execute(stmt).scalars().all()
-    return [_job_to_dict(r) for r in rows]
-
-
-@app.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: int, db: Session = Depends(get_db)):
-    j = db.get(JobModel, job_id)
-    if not j:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return _job_to_dict(j)
-
-
-@app.post("/jobs", status_code=201, response_model=JobOut)
-def create_job(payload: JobCreate, db: Session = Depends(get_db)):
-    job = JobModel(**payload.dict())
-    db.add(job)
-    try:
-        db.commit()
-        db.refresh(job)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Job with this link already exists")
-    return _job_to_dict(job)
-
-
-@app.put("/jobs/{job_id}", response_model=JobOut)
-def update_job(job_id: int, payload: JobUpdate, db: Session = Depends(get_db)):
-    j = db.get(JobModel, job_id)
-    if not j:
-        raise HTTPException(status_code=404, detail="Job not found")
-    data = payload.dict(exclude_unset=True)
-    if not data:
-        return _job_to_dict(j)
-    for field, val in data.items():
-        setattr(j, field, val)
-    try:
-        db.add(j)
-        db.commit()
-        db.refresh(j)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Job with this link already exists")
-    return _job_to_dict(j)
-
-
-@app.delete("/jobs/{job_id}")
-def delete_job(job_id: int, db: Session = Depends(get_db)):
-    j = db.get(JobModel, job_id)
-    if not j:
-        raise HTTPException(status_code=404, detail="Job not found")
-    db.delete(j)
-    db.commit()
-    return {"deleted": True}
+# Note: job CRUD/listing endpoints are provided by the `agent_api.routers.jobs`
+# module. The older inline handlers were removed to avoid route collisions.
 

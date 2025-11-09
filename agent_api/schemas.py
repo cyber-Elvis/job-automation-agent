@@ -50,3 +50,16 @@ __all__ = [
     "JobOut",
     "JobUpdate",
 ]
+
+
+# New response schemas for collectors
+class CollectStoreSummary(BaseModel):
+    url: str
+    stored: int
+    count: int
+
+
+class QueuedCollection(BaseModel):
+    queued: bool
+    url: str
+    limit: int
