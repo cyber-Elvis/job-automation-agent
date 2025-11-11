@@ -50,10 +50,18 @@ for _name in ("rss_generic", "greenhouse", "lever"):
 # Explicitly include the RSS collector router and its jobs sub-router so they're
 # mounted even if dynamic imports change; this makes the jobs API available at
 # /collectors/rss/jobs and also ensures the collector router is mounted.
-from .collectors import rss_generic
-from .collectors.rss_generic import jobs_router as collectors_jobs_router
-app.include_router(rss_generic.router)
-app.include_router(collectors_jobs_router)
+import logging
+logger = get_logger(__name__)
+
+# Try to load collectors but don't crash the app if they fail
+try:
+    from .collectors import rss_generic
+    from .collectors.rss_generic import jobs_router as collectors_jobs_router
+    app.include_router(rss_generic.router)
+    app.include_router(collectors_jobs_router)
+except Exception as e:
+    logger.error("Failed to load rss_generic collector: %s", e)
+    rss_generic = None
 
 # Include the consolidated jobs router (provides /jobs and /jobs/stats)
 from .routers import jobs as jobs_router
@@ -81,7 +89,11 @@ def _schedule_jobs():
         interval_seconds = int(os.getenv("RSS_COLLECT_INTERVAL_SECONDS", "900"))  # 15 min default
         def _job():
             # Use SessionLocal inside job; avoid reusing request-scoped sessions
-            from .collectors.rss_generic import RSSCollectRequest, _do_collect_and_store
+            try:
+                from .collectors.rss_generic import RSSCollectRequest, _do_collect_and_store
+            except Exception as e:
+                logger.error("Scheduled job cannot import rss_generic: %s", e)
+                return
             from .db import SessionLocal as _SessionLocal
             db = _SessionLocal()
             try:

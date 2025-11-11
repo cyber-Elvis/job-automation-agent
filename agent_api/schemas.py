@@ -1,13 +1,14 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 
 class JobItem(BaseModel):
     title: str
-    link: Optional[str] = None
+    link: Optional[str] = None  # keep optional for compatibility with some feeds
     summary: Optional[str] = None
-    published: Optional[datetime] = None
+    # accept either datetime or ISO8601 string
+    published: Optional[datetime | str] = None
     company: Optional[str] = None
     location: Optional[str] = None
     source: str = "rss"
@@ -54,12 +55,22 @@ __all__ = [
 
 # New response schemas for collectors
 class CollectStoreSummary(BaseModel):
-    url: str
-    stored: int
-    count: int
+    # existing fields used by collect-and-store summary
+    url: Optional[str] = None
+    stored: Optional[int] = None
+    count: Optional[int] = None
+    # extended stats compatible with requested shape
+    fetched: Optional[int] = None
+    inserted: Optional[int] = None
+    skipped: Optional[int] = None
 
 
 class QueuedCollection(BaseModel):
     queued: bool
     url: str
     limit: int
+
+
+class RSSCollectResponse(BaseModel):
+    summary: CollectStoreSummary
+    items: List[JobItem] = []

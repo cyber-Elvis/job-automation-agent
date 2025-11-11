@@ -32,12 +32,6 @@ class RSSCollectRequest(BaseModel):
     guess_meta_from_title: bool = Field(True, description="Try to infer company/location from entry title")
 
 
-class RSSCollectResponse(BaseModel):
-    url: HttpUrl
-    count: int
-    items: List[JobItem]
-
-
 # -----------------------
 # Helpers
 # -----------------------
@@ -106,7 +100,10 @@ def collect(req: RSSCollectRequest):
         pass
 
     if not parsed.entries:
-        return RSSCollectResponse(url=req.url, count=0, items=[])
+        return RSSCollectResponse(
+            summary=CollectStoreSummary(url=str(req.url), fetched=0),
+            items=[],
+        )
 
     items: List[JobItem] = []
     for entry in parsed.entries[: req.limit]:
@@ -135,11 +132,14 @@ def collect(req: RSSCollectRequest):
                 location=(location or None),
             )
         )
-    # after loop: return collected items
-    return RSSCollectResponse(url=req.url, count=len(items), items=items)
+    # after loop: return collected items with summary
+    return RSSCollectResponse(
+        summary=CollectStoreSummary(url=str(req.url), fetched=len(items)),
+        items=items,
+    )
 
 
-@router.post("/collect-and-store", response_model=CollectStoreSummary)
+@router.post("/collect-and-store", response_model=RSSCollectResponse)
 def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
     """Collect items from the feed and insert them into the jobs table.
 
@@ -149,26 +149,30 @@ def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
     """
     # parse items (reuses same parsing logic)
     resp = collect(req)
+    fetched = len(resp.items)
 
     # perform fast bulk insert (single roundtrip)
     inserted = bulk_insert_ignore_duplicates(db, resp.items)
+    skipped = max(fetched - inserted, 0)
 
-    return CollectStoreSummary(url=str(req.url), stored=inserted, count=len(resp.items))
+    return RSSCollectResponse(
+        summary=CollectStoreSummary(url=str(req.url), fetched=fetched, inserted=inserted, skipped=skipped),
+        items=resp.items,
+    )
 
 
 def _do_collect_and_store(req: RSSCollectRequest, db: Session) -> RSSCollectResponse:
     """Internal helper to collect and store using an explicit DB session."""
     resp = collect(req)
+    fetched = len(resp.items)
     # Fast bulk insert using Postgres ON CONFLICT DO NOTHING
-    # Build a list of dict rows sized/truncated to match DB columns and then
-    # perform a single INSERT ... VALUES (...), (...), ... ON CONFLICT DO NOTHING
     inserted = bulk_insert_ignore_duplicates(db, resp.items)
-    try:
-        total = len(resp.items)
-    except Exception:
-        total = 0
-    logger.info("rss bulk-insert stored=%d total=%d", inserted, total)
-    return resp
+    skipped = max(fetched - inserted, 0)
+    logger.info("rss bulk-insert stored=%d total=%d", inserted, fetched)
+    return RSSCollectResponse(
+        summary=CollectStoreSummary(url=str(req.url), fetched=fetched, inserted=inserted, skipped=skipped),
+        items=resp.items,
+    )
 
 
 def _rows_from_items(items):
@@ -223,7 +227,10 @@ def collect_from(url: AnyUrl, limit: int = 20, background_tasks: BackgroundTasks
     # schedule background work and return immediately
     if background_tasks is not None:
         background_tasks.add_task(_bg_task, req)
-    return {"queued": True, "url": str(url), "limit": limit}
+        return RSSCollectResponse(
+            summary=CollectStoreSummary(url=str(url), fetched=0, inserted=0, skipped=0),
+            items=[],
+        )
     # fallback: run synchronously if BackgroundTasks not provided
     db = SessionLocal()
     try:
