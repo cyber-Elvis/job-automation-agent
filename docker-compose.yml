@@ -49,7 +49,9 @@
     depends_on:
       - agent-api
     environment:
-      ENABLE_SIGNUP: "false"
+      ENABLE_SIGNUP: "true"
+      ADMIN_EMAIL: "admin@example.com"
+      ADMIN_PASSWORD: "SuperSecurePass123!"
 
 volumes:
   pg: {}
