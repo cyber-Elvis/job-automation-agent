@@ -1,4 +1,6 @@
-﻿from fastapi import FastAPI, Depends, HTTPException
+﻿import os
+import logging
+from fastapi import FastAPI, Depends, HTTPException
 import importlib
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -8,6 +10,14 @@ from datetime import datetime
 from .db import Base, engine, SessionLocal
 from .models import JobORM as JobModel
 # Job API routes are provided by `agent_api.routers.jobs`
+
+# --- Logging (replace get_logger with stdlib logging) ---
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # Minimal API shell that includes available collectors as routers.
 app = FastAPI(title="Job Automation Agent API", version="0.3.0")
@@ -50,9 +60,6 @@ for _name in ("rss_generic", "greenhouse", "lever"):
 # Explicitly include the RSS collector router and its jobs sub-router so they're
 # mounted even if dynamic imports change; this makes the jobs API available at
 # /collectors/rss/jobs and also ensures the collector router is mounted.
-import logging
-logger = get_logger(__name__)
-
 # Try to load collectors but don't crash the app if they fail
 try:
     from .collectors import rss_generic
@@ -68,12 +75,8 @@ from .routers import jobs as jobs_router
 app.include_router(jobs_router.router)
 
 # --- APScheduler setup ---
-import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from .logging_config import get_logger
-
-logger = get_logger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
 
