@@ -16,9 +16,8 @@ API_KEY = os.getenv("API_KEY", "").strip()
 
 
 def require_api_key(x_api_key: str | None = Header(None)):
-    """Require X-API-Key header only when API_KEY env var is set.
+    """TEMP: disable auth for development
 
-    If API_KEY is unset/empty, no auth is enforced (open mode).
+    Previously enforced X-API-Key when API_KEY env was set. Now a no-op.
     """
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    return
