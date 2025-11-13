@@ -1,0 +1,10 @@
+{
+  "name": "List Jobs",
+  "description": "List stored jobs with optional filters: q, source, limit, offset.",
+  "type": "http",
+  "method": "GET",
+  "url": "https://verbose-journey-jj4v7jr5jgq7cjp57-8000.app.github.dev/jobs?limit={{limit|10}}&offset={{offset|0}}&q={{q|}}&source={{source|}}",
+  "headers": {
+    "x-api-key": "super-secret-123"
+  }
+}
