@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
 from ..models import JobORM
-from ..deps import get_db
+from ..deps import get_db, require_api_key
 from ..db import SessionLocal
 from pydantic import BaseModel, HttpUrl, Field, AnyUrl
 from ..schemas import JobItem, CollectStoreSummary, RSSCollectResponse
@@ -155,7 +155,7 @@ def collect(req: RSSCollectRequest):
     )
 
 
-@router.post("/collect-and-store", response_model=RSSCollectResponse)
+@router.post("/collect-and-store", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
 def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
     """Collect items from the feed and insert them into the jobs table.
 
@@ -224,7 +224,7 @@ def bulk_insert_ignore_duplicates(db: Session, items) -> int:
         return 0
 
 
-@router.post("/collect-from", response_model=RSSCollectResponse)
+@router.post("/collect-from", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
 def collect_from(url: HttpUrl, limit: int = 20, background_tasks: BackgroundTasks | None = None):
     """Background-friendly endpoint to collect from a URL and store results.
 
