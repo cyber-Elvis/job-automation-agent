@@ -20,7 +20,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Minimal API shell that includes available collectors as routers.
+from .collectors import rss_generic
+from .routers import jobs as jobs_router
+
 app = FastAPI(title="Job Automation Agent API", version="0.3.0")
+
+# ✅ Mount routers explicitly
+app.include_router(rss_generic.router)
+app.include_router(jobs_router.router)
 
 
 @app.on_event("startup")
@@ -53,26 +60,14 @@ def get_db():
         db.close()
 
 
-for _name in ("rss_generic", "greenhouse", "lever"):
+for _name in ("greenhouse", "lever"):
     _include_optional(_name)
 
 
 # Explicitly include the RSS collector router and its jobs sub-router so they're
 # mounted even if dynamic imports change; this makes the jobs API available at
 # /collectors/rss/jobs and also ensures the collector router is mounted.
-# Try to load collectors but don't crash the app if they fail
-try:
-    from .collectors import rss_generic
-    from .collectors.rss_generic import jobs_router as collectors_jobs_router
-    app.include_router(rss_generic.router)
-    app.include_router(collectors_jobs_router)
-except Exception as e:
-    logger.error("Failed to load rss_generic collector: %s", e)
-    rss_generic = None
-
-# Include the consolidated jobs router (provides /jobs and /jobs/stats)
-from .routers import jobs as jobs_router
-app.include_router(jobs_router.router)
+# Routers are already explicitly mounted above.
 
 # --- APScheduler setup (optional) ---
 try:
