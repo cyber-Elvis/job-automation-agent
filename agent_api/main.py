@@ -74,15 +74,21 @@ except Exception as e:
 from .routers import jobs as jobs_router
 app.include_router(jobs_router.router)
 
-# --- APScheduler setup ---
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+# --- APScheduler setup (optional) ---
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler  # type: ignore
+    from apscheduler.triggers.interval import IntervalTrigger  # type: ignore
+except ImportError:  # pragma: no cover
+    BackgroundScheduler = None  # type: ignore
+    IntervalTrigger = None  # type: ignore
 
-_scheduler: BackgroundScheduler | None = None
+_scheduler: BackgroundScheduler | None = None  # type: ignore[name-defined]
 
 def _schedule_jobs():
     global _scheduler
-    if _scheduler is not None:
+    if _scheduler is not None or BackgroundScheduler is None:
+        if BackgroundScheduler is None:
+            logger.warning("APScheduler not installed; skipping scheduler setup.")
         return _scheduler
     _scheduler = BackgroundScheduler()
 
@@ -100,16 +106,24 @@ def _schedule_jobs():
             from .db import SessionLocal as _SessionLocal
             db = _SessionLocal()
             try:
-                req = RSSCollectRequest(url=feed_url, limit=50)
+                # feed_url may be plain string; let pydantic validate/raise if invalid
+                req = RSSCollectRequest(url=feed_url, limit=50, timeout_seconds=10.0, guess_meta_from_title=True)  # type: ignore[arg-type]
                 _do_collect_and_store(req, db)
             except Exception as e:
                 logger.exception("scheduled rss collection failed: %s", e)
             finally:
                 db.close()
-        _scheduler.add_job(_job, IntervalTrigger(seconds=interval_seconds), id="rss_collect")
-        logger.info("Scheduled RSS collector for url=%s interval=%ss", feed_url, interval_seconds)
+        if IntervalTrigger is not None and _scheduler is not None:
+            _scheduler.add_job(_job, IntervalTrigger(seconds=interval_seconds), id="rss_collect")
+            logger.info("Scheduled RSS collector for url=%s interval=%ss", feed_url, interval_seconds)
+        else:
+            logger.warning("IntervalTrigger unavailable; RSS collection scheduling skipped.")
 
-    _scheduler.start()
+    if _scheduler is not None:
+        try:
+            _scheduler.start()
+        except Exception as e:  # pragma: no cover
+            logger.error("Failed to start scheduler: %s", e)
     return _scheduler
 
 

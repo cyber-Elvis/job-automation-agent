@@ -106,13 +106,31 @@ def collect(req: RSSCollectRequest):
         )
 
     items: List[JobItem] = []
+    def _first(val):
+        # feedparser sometimes returns lists; normalise to first element string
+        if isinstance(val, list):
+            if not val:
+                return None
+            val = val[0]
+        return val
+
     for entry in parsed.entries[: req.limit]:
-        title = entry.get("title") or "(untitled)"
-        link = entry.get("link")
-        summary = _clean_html(entry.get("summary") or entry.get("description"))
+        raw_title = _first(entry.get("title"))
+        title = str(raw_title).strip() if raw_title else "(untitled)"
+        raw_link = _first(entry.get("link"))
+        link = str(raw_link).strip() if raw_link else None
+        summary_raw = _first(entry.get("summary") or entry.get("description"))
+        summary = _clean_html(str(summary_raw)) if summary_raw else None
         published = _parse_published(entry)
 
-        company = entry.get("author") or entry.get("source", {}).get("title")
+        author_val = _first(entry.get("author"))
+        source_raw = entry.get("source")
+        if isinstance(source_raw, dict):
+            company_source = source_raw.get("title")
+        else:
+            company_source = None
+        company_val = author_val or company_source
+        company = str(company_val).strip() if company_val else None
         location = None
 
         if req.guess_meta_from_title:
@@ -122,16 +140,14 @@ def collect(req: RSSCollectRequest):
             company = company or guess_company
             location = location or guess_location
 
-        items.append(
-            JobItem(
-                title=title,
-                link=link,
-                summary=summary,
-                published=published,
-                company=(company or None),
-                location=(location or None),
-            )
-        )
+        items.append(JobItem(
+            title=title,
+            link=link,
+            summary=summary,
+            published=published,
+            company=company,
+            location=location,
+        ))
     # after loop: return collected items with summary
     return RSSCollectResponse(
         summary=CollectStoreSummary(url=str(req.url), fetched=len(items)),
@@ -183,8 +199,8 @@ def _rows_from_items(items):
             "link": str(it.link) if it.link else None,
             "summary": it.summary,
             "published": it.published,
-            "company": (it.company or None)[:256] if it.company else None,
-            "location": (it.location or None)[:256] if it.location else None,
+            "company": it.company[:256] if it.company else None,
+            "location": it.location[:256] if it.location else None,
             "source": it.source or "rss",
         })
     return rows
@@ -209,13 +225,13 @@ def bulk_insert_ignore_duplicates(db: Session, items) -> int:
 
 
 @router.post("/collect-from", response_model=RSSCollectResponse)
-def collect_from(url: AnyUrl, limit: int = 20, background_tasks: BackgroundTasks = None):
+def collect_from(url: HttpUrl, limit: int = 20, background_tasks: BackgroundTasks | None = None):
     """Background-friendly endpoint to collect from a URL and store results.
 
     This enqueues the full collection+store operation to run in the background.
     The request returns immediately with a queued status.
     """
-    req = RSSCollectRequest(url=url, limit=limit)
+    req = RSSCollectRequest(url=url, limit=limit, timeout_seconds=10.0, guess_meta_from_title=True)
 
     def _bg_task(r: RSSCollectRequest):
         db = SessionLocal()

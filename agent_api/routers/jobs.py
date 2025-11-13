@@ -12,7 +12,7 @@ def stats(db: Session = Depends(get_db)):
     rows = (
         db.query(
             JobORM.source.label("source"),
-            func.count().label("count"),
+            func.count().label("total"),
             func.max(JobORM.published).label("last_published"),
             func.max(JobORM.id).label("last_id"),
         )
@@ -22,7 +22,7 @@ def stats(db: Session = Depends(get_db)):
     return [
         {
             "source": r.source,
-            "count": int(r.count),
+            "count": int(r.total),
             "last_published": r.last_published,
             "last_id": int(r.last_id) if r.last_id is not None else None,
         }

@@ -64,3 +64,46 @@ Key routes exposed by `agent_api`:
 Notes:
 - Bulk insert uses PostgreSQL `ON CONFLICT DO NOTHING` on `(source, link)` to avoid duplicate errors.
 - Background scheduling is available if you set env vars: `RSS_COLLECT_URL` and optional `RSS_COLLECT_INTERVAL_SECONDS` (default 900).
+
+## Optional Features
+
+Some capabilities are intentionally optional so the core API can run in minimal environments.
+
+### Structured Extraction (extruct + w3lib)
+The helper `agent_api.extract.structured.extract_jobposting(url, ua)` attempts to parse JSON-LD `JobPosting` objects from a single page. It requires:
+
+```
+extruct
+w3lib
+```
+
+If either library is missing, the function safely returns an empty list (no ImportError). Install them (already pinned in `requirements.txt`) if you want automatic enrichment:
+
+```bash
+pip install extruct w3lib
+```
+
+### Scheduling (APScheduler)
+Periodic RSS collection uses APScheduler. Set these environment variables to enable it:
+
+```
+RSS_COLLECT_URL=https://example.com/feed.xml
+RSS_COLLECT_INTERVAL_SECONDS=900   # optional; default 900 seconds
+```
+
+If `APScheduler` is not installed, the app logs a warning and skips scheduler setup (no crash). To add scheduling support:
+
+```bash
+pip install APScheduler
+```
+
+### Verifying Optional Components
+After installing optional packages, restart the application. You should see log lines similar to:
+
+```
+[collectors] included: rss_generic
+INFO Scheduled RSS collector for url=... interval=900s
+```
+
+And structured extraction calls will populate `company` / `location` automatically when JSON-LD data contains them.
+
