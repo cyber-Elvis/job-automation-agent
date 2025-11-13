@@ -155,7 +155,7 @@ def collect(req: RSSCollectRequest):
     )
 
 
-@router.post("/collect-and-store", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
+@router.post("/collect-and-store-json", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
 def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
     """Collect items from the feed and insert them into the jobs table.
 
@@ -224,35 +224,32 @@ def bulk_insert_ignore_duplicates(db: Session, items) -> int:
         return 0
 
 
-@router.post("/collect-from", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
-def collect_from(url: HttpUrl, limit: int = 20, background_tasks: BackgroundTasks | None = None):
-    """Background-friendly endpoint to collect from a URL and store results.
+def _collect_from_core(url: HttpUrl, limit: int = 20):
+    """Helper to run collection+store without FastAPI injection.
 
-    This enqueues the full collection+store operation to run in the background.
-    The request returns immediately with a queued status.
+    Useful for background tasks or direct programmatic invocation.
     """
     req = RSSCollectRequest(url=url, limit=limit, timeout_seconds=10.0, guess_meta_from_title=True)
-
-    def _bg_task(r: RSSCollectRequest):
-        db = SessionLocal()
-        try:
-            _do_collect_and_store(r, db)
-        finally:
-            db.close()
-
-    # schedule background work and return immediately
-    if background_tasks is not None:
-        background_tasks.add_task(_bg_task, req)
-        return RSSCollectResponse(
-            summary=CollectStoreSummary(url=str(url), fetched=0, inserted=0, skipped=0),
-            items=[],
-        )
-    # fallback: run synchronously if BackgroundTasks not provided
     db = SessionLocal()
     try:
-        return _do_collect_and_store(req, db)
+        _do_collect_and_store(req, db)
     finally:
         db.close()
+
+
+@router.post("/collect-and-store", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
+@router.post("/collect-from", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
+def collect_from(url: HttpUrl, background_tasks: BackgroundTasks, *, limit: int = 20):
+    """Enqueue collection+store to run in the background.
+
+    FastAPI injects `background_tasks`, so no Optional/union is needed.
+    Returns immediately with a queued summary.
+    """
+    background_tasks.add_task(_collect_from_core, url, limit)
+    return RSSCollectResponse(
+        summary=CollectStoreSummary(url=str(url), fetched=0, inserted=0, skipped=0),
+        items=[],
+    )
 
 
 # -----------------------
