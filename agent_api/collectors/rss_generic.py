@@ -156,7 +156,7 @@ def collect(req: RSSCollectRequest):
 
 
 @router.post("/collect-and-store-json", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
-def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
+def collect_and_store_json(req: RSSCollectRequest, db: Session = Depends(get_db)):
     """Collect items from the feed and insert them into the jobs table.
 
     This reuses the `collect()` parser above and performs a fast bulk insert
@@ -237,8 +237,23 @@ def _collect_from_core(url: HttpUrl, limit: int = 20):
         db.close()
 
 
-@router.post("/collect-and-store", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
-@router.post("/collect-from", response_model=RSSCollectResponse, dependencies=[Depends(require_api_key)])
+@router.post(
+    "/collect-and-store",
+    response_model=RSSCollectResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def collect_and_store(req: RSSCollectRequest, db: Session = Depends(get_db)):
+    """
+    Collect RSS items now, store them in the DB, and return summary + items.
+    """
+    return _do_collect_and_store(req, db)
+
+
+@router.post(
+    "/collect-from",
+    response_model=RSSCollectResponse,
+    dependencies=[Depends(require_api_key)],
+)
 def collect_from(url: HttpUrl, background_tasks: BackgroundTasks, *, limit: int = 20):
     """Enqueue collection+store to run in the background.
 
