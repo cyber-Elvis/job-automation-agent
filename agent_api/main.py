@@ -5,10 +5,13 @@ import importlib
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from .db import Base, engine, SessionLocal
 from .models import JobORM as JobModel
+# pydantic helpers and prefill util
+from pydantic import BaseModel, HttpUrl
+from .prefill.playwright_prefill import prefill_and_pause
 # Job API routes are provided by `agent_api.routers.jobs`
 
 # --- Logging (replace get_logger with stdlib logging) ---
@@ -28,6 +31,16 @@ app = FastAPI(title="Job Automation Agent API", version="0.3.0")
 # ✅ Mount routers explicitly
 app.include_router(rss_generic.router)
 app.include_router(jobs_router.router)
+
+
+# ---- Request models ----
+class PrefillPayload(BaseModel):
+    apply_url: HttpUrl
+    name: str
+    email: str
+    phone: str
+    resume_path: str = ""
+    cover_letter: str = ""
 
 
 @app.on_event("startup")
@@ -125,6 +138,37 @@ def _schedule_jobs():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/prefill")
+def prefill(payload: PrefillPayload):
+    """
+    Open a headed Chromium browser, prefill what we can, then pause for manual submission.
+    """
+    # Map incoming data into a generic 'fields' dict
+    fields: Dict[str, Any] = {
+        "name": payload.name,
+        "email": payload.email,
+        "phone": payload.phone,
+        "resume_path": payload.resume_path,
+        "cover_letter": payload.cover_letter,
+    }
+
+    ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36 JobAgentPrefill"
+    )
+
+    try:
+        # This will open Chromium inside the agent-api container
+        prefill_and_pause(str(payload.apply_url), ua, fields)
+        status = "ok"
+    except Exception as e:
+        # Don't crash the API; return the error so you can see it in OpenWebUI
+        status = f"error: {e!s}"
+
+    return {"status": status, "fields": fields}
 
 
 # Note: job CRUD/listing endpoints are provided by the `agent_api.routers.jobs`
