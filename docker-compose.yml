@@ -47,6 +47,9 @@
     container_name: openwebui
     ports:
       - "3000:8080"
+    volumes:
+      - openwebui_data:/app/backend/data
+      - openwebui_models:/app/models
     depends_on:
       - agent-api
     # same default network as agent-api
@@ -57,3 +60,5 @@
 
 volumes:
   pg: {}
+  openwebui_data:
+  openwebui_models:
