@@ -22,15 +22,15 @@
     # no host port mapping – container is reachable as "redis:6379" from agent-api
 
   agent-api:
-    build:
-      context: .
-      dockerfile: ./agent_api/Dockerfile
+    build: ./agent_api
+    container_name: agent-api
     command: uvicorn agent_api.main:app --host 0.0.0.0 --port 8000 --reload
-    env_file:
-      - .env
+    # env_file:
+    #   - .env
     environment:
       # Compose will substitute POSTGRES_PASSWORD if present, else default to 'jobagent'
       DATABASE_URL: "postgresql+psycopg2://jobagent:${POSTGRES_PASSWORD:-jobagent}@db:5432/jobagent"
+      # API_KEY: ""   # leave unset or empty for now
     volumes:
       - ./:/workspace
     ports:
@@ -44,10 +44,12 @@
 
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
+    container_name: openwebui
     ports:
       - "3000:8080"
     depends_on:
       - agent-api
+    # same default network as agent-api
     environment:
       ENABLE_SIGNUP: "true"
       ADMIN_EMAIL: "admin@example.com"
